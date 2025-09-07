@@ -270,6 +270,15 @@ pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, 
     E.dirty += 1;
 }
 
+pub fn editorRowDelChar(allocator,row:*erow, at: usize) {
+    if(at < 0 or at >= row.size) return;
+    std.mem.copyBackwards(u8, row.chars[at .. row.size - 1], row.chars[at +1 ..row.size]);
+    row.size -= 1;
+    editorUpdateRow(allocator, row: *erow);
+    E.dirty += 1;
+
+}
+
 // editor operations
 pub fn editorInsertChar(allocator: std.mem.Allocator, input: []u8) !void {
     if (E.cy == E.numrows) {
@@ -277,6 +286,16 @@ pub fn editorInsertChar(allocator: std.mem.Allocator, input: []u8) !void {
     }
     try editorRowInsertChar(allocator, &E.row[E.cy], E.cx, input);
     E.cx += 1;
+}
+
+pub fn editorDelChar(allocator) {
+    if (E.cy == E.numrows) return;
+
+    const row: *erow = &E.row[E.cy];
+    if(E.cx > 0){
+        editorRowDelChar(allocator, row,E.cx -1);
+        E.cx -= 1;
+    }
 }
 // file i/o
 pub fn editorUpdateRow(allocator: std.mem.Allocator, row: *erow) !void {
@@ -445,14 +464,13 @@ pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
             return;
         },
         ctrlKey('q') => {
-            allocator.free(E.statusmsg);
             if (E.dirty > 0) {
                 const message = try std.fmt.allocPrint(allocator, "WARNING !!! Files Have unsaved changes press q again to quit without saving", .{});
                 try editorSetStatusMessage(message);
-                allocator.free(message);
                 E.dirty = 0;
                 return;
             }
+            allocator.free(E.statusmsg);
             if (c.write(std.io.getStdOut().handle, "\x1b[2J", 4) == -1) {
                 return error.WriteFailed;
             }
@@ -476,6 +494,10 @@ pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
             return;
         },
         editorKey.BACKSPACE, ctrlKey('h'), editorKey.DEL_KEY => {
+            if(key == editorKey.DEL_KEY) {
+                editorMoveCursor(editorKey.ARROW_RIGHT);
+            }
+            editorDelChar(allocator);
             return;
         },
         editorKey.PAGE_UP, editorKey.PAGE_DOWN => {
