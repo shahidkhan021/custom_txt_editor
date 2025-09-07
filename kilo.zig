@@ -335,14 +335,13 @@ pub fn editorInsertRow(allocator: std.mem.Allocator, at: usize, input: []u8, len
 
     E.numrows += 1;
 }
-pub fn editorRowsToString(allocator: std.mem.Allocator, buflen: *usize) ![]u8 {
+pub fn editorRowsToString(allocator: std.mem.Allocator) ![]u8 {
     var totlen: usize = 0;
     for (0..E.numrows) |j| {
         totlen += E.row[j].chars.len;
     }
-    buflen = totlen;
 
-    const buf = try allocator.alloc(u8, totlen);
+    const buf = try allocator.alloc(u8, totlen + 6);
     var p: usize = 0;
 
     for (0..E.numrows) |j| {
@@ -447,6 +446,10 @@ pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
                 return error.WriteFailed;
             }
             return error.UserExit;
+        },
+        ctrlKey('s') => {
+            try editorSave(allocator);
+            return;
         },
         editorKey.HOME_KEY => {
             if (E.cy < E.numrows) {
@@ -603,12 +606,25 @@ pub fn editorRefreshScreen(allocator: std.mem.Allocator) !void {
     try std.io.getStdOut().writeAll(ab.items);
 }
 
-pub fn editorSetStatusMessage(allocator: std.mem.Allocator) !void {
-    const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-Q = quit", .{});
-
-    E.statusmsg = formatted;
+pub fn editorSetStatusMessage(message: []u8) !void {
+    E.statusmsg = message;
     E.statusmsg_time = c.time(null);
-    // defer allocator.free(formatted);
+}
+
+pub fn editorSave(allocator: std.mem.Allocator) !void {
+    if (E.filename == null) return;
+
+    const buf: []u8 = try editorRowsToString(allocator);
+    const file = try fs.cwd().createFile(E.filename.?, .{
+        .read = true,
+        .truncate = true,
+    });
+    try file.writeAll(buf);
+    file.close();
+    const message = try std.fmt.allocPrint(allocator, "{d} bytes written to disk", .{buf.len});
+    try editorSetStatusMessage(message);
+    // allocator.free(buf);
+    return;
 }
 
 //init
@@ -641,7 +657,9 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    try editorSetStatusMessage(allocator);
+    const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-Q = quit", .{});
+    try editorSetStatusMessage(formatted);
+    // allocator.free(formatted);
 
     while (true) {
         try editorRefreshScreen(allocator);
