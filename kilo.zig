@@ -40,6 +40,7 @@ const editorConfig = struct {
     filename: ?[]u8,
     statusmsg: []u8,
     statusmsg_time: c.time_t,
+    dirty: usize,
 };
 var E: editorConfig = .{
     .cx = 0,
@@ -55,6 +56,7 @@ var E: editorConfig = .{
     .filename = null,
     .statusmsg = undefined,
     .statusmsg_time = 0,
+    .dirty = 0,
 };
 
 const TCSA: c_int = 2;
@@ -265,6 +267,7 @@ pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, 
     row.size += 1;
     row.chars[pos] = ch[0];
     try editorUpdateRow(allocator, row);
+    E.dirty += 1;
 }
 
 // editor operations
@@ -334,6 +337,7 @@ pub fn editorInsertRow(allocator: std.mem.Allocator, at: usize, input: []u8, len
     try editorUpdateRow(allocator, &E.row[at]);
 
     E.numrows += 1;
+    E.dirty += 1;
 }
 pub fn editorRowsToString(allocator: std.mem.Allocator) ![]u8 {
     var totlen: usize = 0;
@@ -351,7 +355,9 @@ pub fn editorRowsToString(allocator: std.mem.Allocator) ![]u8 {
         p += 1;
     }
 
-    return buf;
+    const string = std.fmt.allocPrint(allocator, "{s}", .{buf});
+    allocator.free(buf);
+    return string;
 }
 pub fn editorOpen(filename: [*:0]u8) !void {
     var file = try std.fs.cwd().openFile(std.mem.span(filename), .{});
@@ -370,6 +376,7 @@ pub fn editorOpen(filename: [*:0]u8) !void {
         at += 1;
         defer allocator.free(line);
     }
+    E.dirty = 0;
 }
 // append buffer
 const abuf = struct { b: ?[]u8, len: usize };
@@ -439,6 +446,13 @@ pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
         },
         ctrlKey('q') => {
             allocator.free(E.statusmsg);
+            if (E.dirty > 0) {
+                const message = try std.fmt.allocPrint(allocator, "WARNING !!! Files Have unsaved changes press q again to quit without saving", .{});
+                try editorSetStatusMessage(message);
+                allocator.free(message);
+                E.dirty = 0;
+                return;
+            }
             if (c.write(std.io.getStdOut().handle, "\x1b[2J", 4) == -1) {
                 return error.WriteFailed;
             }
@@ -557,7 +571,7 @@ pub fn editorDrawStatusBar(ab: *std.ArrayListUnmanaged(u8), allocator: std.mem.A
     try ab.appendSlice(allocator, "\x1b[7m");
 
     const filename: []const u8 = if (E.filename != null) E.filename.? else "[No Name]";
-    const status = try std.fmt.allocPrint(allocator, "{s:_^4} - {d} lines {d}/{d}", .{ filename, E.numrows, E.cy + 1, E.numrows });
+    const status = try std.fmt.allocPrint(allocator, "{s:_^4} - {d} lines {d}/{d} {s}", .{ filename, E.numrows, E.cy + 1, E.numrows, if (E.dirty > 0) "(modified)" else " " });
     var len: usize = 0;
     while (len < E.screencols) {
         if (E.screencols - len == status.len) {
@@ -597,7 +611,7 @@ pub fn editorRefreshScreen(allocator: std.mem.Allocator) !void {
     try editorDrawStatusBar(&ab, allocator);
     try editorDrawMessageBar(&ab, allocator);
 
-    const buf = try std.fmt.allocPrint(allocator, "\x1b[{};{}H", .{ (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1 });
+    const buf = try std.fmt.allocPrint(allocator, "\x1b[{};{}H", .{ (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 2 });
     try ab.appendSlice(allocator, buf);
     allocator.free(buf);
 
@@ -628,10 +642,11 @@ pub fn editorSave(allocator: std.mem.Allocator) !void {
         try editorSetStatusMessage(message);
         return;
     };
+    E.dirty = 0;
     file.close();
     const message = try std.fmt.allocPrint(allocator, "{d} bytes written to disk", .{buf.len});
     try editorSetStatusMessage(message);
-    // allocator.free(buf);
+    // allocator.free(message);
     return;
 }
 
@@ -665,7 +680,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-Q = quit", .{});
+    const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-S = save |  Ctrl-Q = quit", .{});
     try editorSetStatusMessage(formatted);
     // allocator.free(formatted);
 
