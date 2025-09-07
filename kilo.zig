@@ -260,8 +260,8 @@ pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, 
         pos = row.size;
     }
 
-    row.chars = try allocator.realloc(row.chars, row.size + 2);
-    std.mem.copyBackwards(u8, row.chars[pos + 1 ..], row.chars[pos .. row.size + 1]);
+    row.chars = try allocator.realloc(row.chars, row.size + 1);
+    std.mem.copyBackwards(u8, row.chars[pos + 1 .. row.size + 1], row.chars[pos..row.size]);
     row.size += 1;
     row.chars[pos] = ch[0];
     try editorUpdateRow(allocator, row);
@@ -297,7 +297,7 @@ pub fn editorUpdateRow(allocator: std.mem.Allocator, row: *erow) !void {
                 row.render.?[idx] = ' ';
                 while (idx % kilotabstop != 0) {
                     idx += 1;
-                    render[idx] = ' ';
+                    render[idx] = 't';
                 }
             } else {
                 idx += 1;
@@ -326,11 +326,11 @@ pub fn editorInsertRow(allocator: std.mem.Allocator, at: usize, input: []u8, len
     E.row[at].size = len;
     E.row[at].chars = try allocator.alloc(u8, input.len);
     @memcpy(E.row[at].chars, input);
-    E.row[at].chars = try allocator.realloc(E.row[at].chars, len + 2);
-    E.row[at].chars[input.len] = '0';
+    // E.row[at].chars = try allocator.realloc(E.row[at].chars, len + 1);
+    // E.row[at].chars[input.len] = '0';
 
     E.row[at].rsize = 0;
-    E.row[at].render = null;
+    E.row[at].render = try std.fmt.allocPrint(allocator, "", .{});
     try editorUpdateRow(allocator, &E.row[at]);
 
     E.numrows += 1;
@@ -341,7 +341,7 @@ pub fn editorRowsToString(allocator: std.mem.Allocator) ![]u8 {
         totlen += E.row[j].chars.len;
     }
 
-    const buf = try allocator.alloc(u8, totlen + 6);
+    const buf = try allocator.alloc(u8, totlen + E.numrows);
     var p: usize = 0;
 
     for (0..E.numrows) |j| {
@@ -405,7 +405,7 @@ pub fn editorMoveCursor(key: i32) void {
                 E.cx += 1;
             } else if (row != null and E.cx == row.?.chars.len) {
                 E.cy += 1;
-                E.cx = 0;
+                E.cx = 1;
             }
             return;
         },
@@ -426,7 +426,7 @@ pub fn editorMoveCursor(key: i32) void {
     row = if (E.cy >= E.numrows) null else E.row[E.cy];
     const rowlen = if (row) row.chars.len else 0;
     if (E.cx > rowlen) {
-        E.cx = rowlen;
+        E.cx = rowlen + 1;
     }
 }
 
@@ -523,7 +523,7 @@ pub fn editorDrawRows(allocator: std.mem.Allocator, ab: *std.ArrayListUnmanaged(
     for (0..rowsize) |y| {
         const filerow = y + E.rowoff;
         if (filerow >= E.numrows) {
-            if (y == rowsize - 2 and E.numrows == 0) {
+            if (y == rowsize - 1 and E.numrows == 0) {
                 const welcome = try std.fmt.allocPrint(allocator, "Kilo editor -- version {s}", .{kiloversion});
 
                 var padding = (colsize - welcome.len) / 2;
@@ -615,11 +615,19 @@ pub fn editorSave(allocator: std.mem.Allocator) !void {
     if (E.filename == null) return;
 
     const buf: []u8 = try editorRowsToString(allocator);
-    const file = try fs.cwd().createFile(E.filename.?, .{
+    const file = fs.cwd().createFile(E.filename.?, .{
         .read = true,
         .truncate = true,
-    });
-    try file.writeAll(buf);
+    }) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "Can't save! I/O error: {any}", .{err});
+        try editorSetStatusMessage(message);
+        return;
+    };
+    file.writeAll(buf) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "Can't save! I/O error: {any}", .{err});
+        try editorSetStatusMessage(message);
+        return;
+    };
     file.close();
     const message = try std.fmt.allocPrint(allocator, "{d} bytes written to disk", .{buf.len});
     try editorSetStatusMessage(message);
