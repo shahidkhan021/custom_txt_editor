@@ -1,0 +1,30 @@
+# -------------------------------
+# Ignore Zig build artifacts
+.zig-cache/
+*.o
+kilo
+
+# Ignore Zig toolchain archive and folder
+zig-linux-x86_64-0.14.0/
+zig-linux-x86_64-0.14.0.tar.xz
+zig-linux-x86_64-0.14.0.tar.xz:Zone.Identifier
+
+# Ignore Python cache files (optional)
+__pycache__/
+*.pyc
+
+# Ignore editor/IDE temporary files
+*.swp
+*~
+*.bak
+
+# -------------------------------
+# Ignore these files/folders explicitly
+
+assignment.zig
+input.txt
+interview.py
+interview/
+test_fail.zig
+test_pass.zig
+
