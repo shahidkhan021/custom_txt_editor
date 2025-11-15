@@ -270,13 +270,12 @@ pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, 
     E.dirty += 1;
 }
 
-pub fn editorRowDelChar(allocator,row:*erow, at: usize) {
-    if(at < 0 or at >= row.size) return;
-    std.mem.copyBackwards(u8, row.chars[at .. row.size - 1], row.chars[at +1 ..row.size]);
+pub fn editorRowDelChar(allocator: std.mem.Allocator, row: *erow, at: usize) !void {
+    if (at < 0 or at >= row.size) return;
+    std.mem.copyBackwards(u8, row.chars[at .. row.size - 1], row.chars[at + 1 .. row.size]);
     row.size -= 1;
-    editorUpdateRow(allocator, row: *erow);
+    try editorUpdateRow(allocator, row);
     E.dirty += 1;
-
 }
 
 // editor operations
@@ -288,12 +287,12 @@ pub fn editorInsertChar(allocator: std.mem.Allocator, input: []u8) !void {
     E.cx += 1;
 }
 
-pub fn editorDelChar(allocator) {
+pub fn editorDelChar(allocator: std.mem.Allocator) !void {
     if (E.cy == E.numrows) return;
 
     const row: *erow = &E.row[E.cy];
-    if(E.cx > 0){
-        editorRowDelChar(allocator, row,E.cx -1);
+    if (E.cx > 0) {
+        editorRowDelChar(allocator, row, E.cx - 1);
         E.cx -= 1;
     }
 }
@@ -494,7 +493,7 @@ pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
             return;
         },
         editorKey.BACKSPACE, ctrlKey('h'), editorKey.DEL_KEY => {
-            if(key == editorKey.DEL_KEY) {
+            if (key == editorKey.DEL_KEY) {
                 editorMoveCursor(editorKey.ARROW_RIGHT);
             }
             editorDelChar(allocator);
