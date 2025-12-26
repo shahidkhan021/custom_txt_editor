@@ -273,6 +273,7 @@ pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, 
 pub fn editorRowDelChar(allocator: std.mem.Allocator, row: *erow, at: usize) !void {
     if (at < 0 or at >= row.size) return;
     std.mem.copyBackwards(u8, row.chars[at .. row.size - 1], row.chars[at + 1 .. row.size]);
+    row.chars = try allocator.realloc(row.chars, row.size - 1);
     row.size -= 1;
     try editorUpdateRow(allocator, row);
     E.dirty += 1;
@@ -282,6 +283,8 @@ pub fn editorRowDelChar(allocator: std.mem.Allocator, row: *erow, at: usize) !vo
 pub fn editorInsertChar(allocator: std.mem.Allocator, input: []u8) !void {
     if (E.cy == E.numrows) {
         try editorInsertRow(allocator, 0, input, input.len);
+        E.cx += 1;
+        return;
     }
     editorRowInsertChar(allocator, &E.row[E.cy], E.cx, input) catch |err| {
         std.debug.print("Error inserting char: {any}\n", .{err});
@@ -297,6 +300,21 @@ pub fn editorDelChar(allocator: std.mem.Allocator) !void {
         try editorRowDelChar(allocator, row, E.cx - 1);
         E.cx -= 1;
     }
+}
+
+pub fn editorInsertNewline(allocator: std.mem.Allocator) !void {
+    if (E.cx == 0) {
+        try editorInsertRow(allocator, E.cy, &.{}, 0);
+    } else {
+        var row = &E.row[E.cy];
+        try editorInsertRow(allocator, E.cy + 1, row.chars[0..E.cx], row.size - E.cx);
+        row = &E.row[E.cy];
+        row.size = E.cx;
+        row.chars[row.size - 1] = 0;
+        try editorUpdateRow(allocator, row);
+    }
+    E.cy += 1;
+    E.cx = 0;
 }
 // file i/o
 pub fn editorUpdateRow(allocator: std.mem.Allocator, row: *erow) !void {
@@ -466,6 +484,7 @@ pub fn editorProcessKeyPress(gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_s
 
     switch (key) {
         '\r' => {
+            try editorInsertNewline(allocator);
             return;
         },
         ctrlKey('q') => {
@@ -650,7 +669,7 @@ pub fn editorRefreshScreen(gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_saf
     try editorDrawStatusBar(ab, allocator);
     try editorDrawMessageBar(ab, allocator);
 
-    const buf = try std.fmt.allocPrint(allocator, "\x1b[{};{}H", .{ (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 2 });
+    const buf = try std.fmt.allocPrint(allocator, "\x1b[{};{}H", .{ (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1 });
     defer allocator.free(buf);
     try ab.appendSlice(allocator, buf);
 
