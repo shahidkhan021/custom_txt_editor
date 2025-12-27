@@ -303,14 +303,19 @@ pub fn editorDelChar(allocator: std.mem.Allocator) !void {
 }
 
 pub fn editorInsertNewline(allocator: std.mem.Allocator) !void {
+    const empty = try std.fmt.allocPrint(allocator, "", .{});
+    defer allocator.free(empty);
+    var row = &E.row[E.cy];
     if (E.cx == 0) {
         try editorInsertRow(allocator, E.cy, &.{}, 0);
+    } else if (E.cx >= E.row[E.cy].size) {
+        try editorInsertRow(allocator, E.cy + 1, empty, 0);
     } else {
-        var row = &E.row[E.cy];
-        try editorInsertRow(allocator, E.cy + 1, row.chars[0..E.cx], row.size - E.cx);
+        const remainder = row.chars[E.cx..row.size];
+        try editorInsertRow(allocator, E.cy + 1, remainder, remainder.len);
         row = &E.row[E.cy];
+        row.chars = try allocator.realloc(row.chars, E.cx);
         row.size = E.cx;
-        row.chars[row.size - 1] = 0;
         try editorUpdateRow(allocator, row);
     }
     E.cy += 1;
@@ -353,28 +358,27 @@ pub fn editorUpdateRow(allocator: std.mem.Allocator, row: *erow) !void {
     row.render.?[idx] = 0;
     row.rsize = idx;
 }
-pub fn editorInsertRow(allocator: std.mem.Allocator, at: usize, input: []u8, len: usize) !void {
-    if (at < 0 or at > E.numrows) return;
-    var temp: []erow = undefined;
-    if (at == 0) {
-        temp = try allocator.alloc(erow, 1);
-    } else {
-        temp = try allocator.realloc(E.row, E.numrows + 1);
+pub fn editorInsertRow(allocator: std.mem.Allocator, at: usize, input: []const u8, len: usize) !void {
+    if (at > E.numrows) return;
+
+    // Reallocate the row array
+    const new_rows = try allocator.realloc(E.row, E.numrows + 1);
+    E.row = new_rows;
+
+    // Shift rows down to make space (from bottom to top to avoid overwrite)
+    var i: usize = E.numrows;
+    while (i > at) : (i -= 1) {
+        E.row[i] = E.row[i - 1];
     }
 
-    E.row = temp;
-    for (0..E.numrows) |index| {
-        E.row[index].size += 1;
-    }
+    // Initialize the new row
+    E.row[at] = .{
+        .size = len,
+        .chars = try allocator.dupe(u8, input), // proper copy
+        .render = null,
+        .rsize = 0,
+    };
 
-    E.row[at].size = len;
-    E.row[at].chars = try allocator.alloc(u8, input.len);
-    @memcpy(E.row[at].chars, input);
-    // E.row[at].chars = try allocator.realloc(E.row[at].chars, len + 1);
-    // E.row[at].chars[input.len] = '0';
-
-    E.row[at].rsize = 0;
-    E.row[at].render = try std.fmt.allocPrint(allocator, "", .{});
     try editorUpdateRow(allocator, &E.row[at]);
 
     E.numrows += 1;
