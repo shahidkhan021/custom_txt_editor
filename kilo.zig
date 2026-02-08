@@ -440,6 +440,46 @@ pub fn abFree(ab: *abuf) !void {
 
 //input
 
+pub fn editorPrompt(prompt: []u8) ![]u8 {
+    const bufsize: usize = 128;
+    var gpa: std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }) = .{};
+    const allocator = gpa.allocator();
+    var buf = try allocator.alloc(u8, bufsize);
+    const buflen: usize = 0;
+    buf[0] = 0;
+    var ab: std.ArrayListUnmanaged(u8) = std.ArrayListUnmanaged(u8){};
+    defer ab.deinit(allocator);
+
+    while (true) {
+        try editorSetStatusMessage(allocator, prompt);
+        try editorRefreshScreen(&gpa, &ab);
+
+        const key = try editorReadKey();
+        const otherkey: u8 = @intCast(key);
+        if (key == editorKey.BACKSPACE or key == ctrlKey('h') or key == editorKey.DEL_KEY) {
+            if (buflen != 0) {
+                buf[buflen - 1] = 0;
+            }
+            if (key == '\x1b') {
+                try editorSetStatusMessage(allocator, &.{});
+                return &.{};
+            } else if (key == '\r') {
+                if (buflen != 0) {
+                    try editorSetStatusMessage(allocator, &.{});
+                    return buf[0..buflen];
+                }
+            } else if (otherkey != ctrlKey(otherkey) and key < 128) {
+                if (buflen == bufsize - 1) {
+                    bufsize *= 2;
+                    buf = try allocator.realloc(buf, bufsize);
+                }
+                buf[buflen + 1] = otherkey;
+                buf[buflen] = 0;
+            }
+        }
+    }
+}
+
 pub fn editorMoveCursor(key: i32) void {
     const row = if (E.cy >= E.numrows) null else E.row[E.cy];
     switch (key) {
@@ -691,7 +731,16 @@ pub fn editorSetStatusMessage(allocator: std.mem.Allocator, message: []u8) !void
 }
 
 pub fn editorSave(allocator: std.mem.Allocator) !void {
-    if (E.filename == null) return;
+    if (E.filename == null) {
+        const msg = try std.fmt.allocPrint(allocator, "Save as: %s (ESC to cancel)", .{});
+        E.filename = try editorPrompt(msg);
+        allocator.free(msg);
+        if (E.filename == null) {
+            const abortmsg = try std.fmt.allocPrint(allocator, "Aborted", .{});
+            try editorSetStatusMessage(allocator, abortmsg);
+            return;
+        }
+    }
 
     const content: []u8 = try editorRowsToString(allocator);
     defer allocator.free(content);
