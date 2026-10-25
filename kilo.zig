@@ -60,6 +60,18 @@ var E: editorConfig = .{
 };
 
 const TCSA: c_int = 2;
+
+//debug
+var dbg: ?std.fs.File = null;
+
+fn dlog(comptime fmt: []const u8, args: anytype) void {
+    const f = dbg orelse blk: {
+        const file = std.fs.cwd().createFile("kilo.log", .{ .truncate = true }) catch return;
+        dbg = file;
+        break :blk file;
+    };
+    f.writer().print(fmt ++ "\n", args) catch {};
+}
 // terminal
 
 pub fn die(message: []const u8) !void {
@@ -83,14 +95,14 @@ fn ctrlKey(k: u8) u8 {
 
 const editorKey = enum(usize) {
     const ARROW_LEFT = 1000;
-    const ARROW_RIGHT = 0;
-    const ARROW_UP = 1;
-    const ARROW_DOWN = 2;
-    const DEL_KEY = 7;
-    const PAGE_UP = 3;
-    const PAGE_DOWN = 4;
-    const HOME_KEY = 5;
-    const END_KEY = 6;
+    const ARROW_RIGHT = 1001;
+    const ARROW_UP = 1002;
+    const ARROW_DOWN = 1003;
+    const DEL_KEY = 1004;
+    const PAGE_UP = 1005;
+    const PAGE_DOWN = 1006;
+    const HOME_KEY = 1007;
+    const END_KEY = 1008;
     const BACKSPACE = 127;
 };
 
@@ -246,6 +258,7 @@ pub fn getWindowSize(rows: *usize, cols: *usize) !i32 {
 }
 // row operations
 pub fn editorRowCxToRx(row: *erow, cx: usize) usize {
+    dlog("CxToRx cx={d} size={d} len={d} cy={d}", .{ cx, row.size, row.chars.len, E.cy });
     var rx: usize = 0;
     for (0..cx) |j| {
         if (row.chars[j] == '\t') {
@@ -268,11 +281,12 @@ pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, 
     row.chars[pos] = ch[0];
     try editorUpdateRow(allocator, row);
     E.dirty += 1;
+    dlog("OUT size={d} len={d} rsize={d} [{s}]", .{ row.size, row.chars.len, row.rsize, row.chars });
 }
 
 pub fn editorRowDelChar(allocator: std.mem.Allocator, row: *erow, at: usize) !void {
     if (at < 0 or at >= row.size) return;
-    std.mem.copyBackwards(u8, row.chars[at .. row.size - 1], row.chars[at + 1 .. row.size]);
+    std.mem.copyForwards(u8, row.chars[at .. row.size - 1], row.chars[at + 1 .. row.size]);
     row.chars = try allocator.realloc(row.chars, row.size - 1);
     row.size -= 1;
     try editorUpdateRow(allocator, row);
@@ -282,7 +296,7 @@ pub fn editorRowDelChar(allocator: std.mem.Allocator, row: *erow, at: usize) !vo
 // editor operations
 pub fn editorInsertChar(allocator: std.mem.Allocator, input: []u8) !void {
     if (E.cy == E.numrows) {
-        try editorInsertRow(allocator, 0, input, input.len);
+        try editorInsertRow(allocator, E.numrows, input, input.len);
         E.cx += 1;
         return;
     }
@@ -403,9 +417,7 @@ pub fn editorRowsToString(allocator: std.mem.Allocator) ![]u8 {
     }
     return buf;
 }
-pub fn editorOpen(filename: [*:0]u8, gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_safe = true })) !void {
-    const allocator = gpa.allocator();
-
+pub fn editorOpen(filename: [*:0]u8, allocator: std.mem.Allocator) !void {
     var file = try std.fs.cwd().openFile(std.mem.span(filename), .{});
     defer file.close();
 
@@ -440,91 +452,80 @@ pub fn abFree(ab: *abuf) !void {
 
 //input
 
-pub fn editorPrompt(prompt: []u8) ![]u8 {
-    const bufsize: usize = 128;
-    var gpa: std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }) = .{};
-    const allocator = gpa.allocator();
-    var buf = try allocator.alloc(u8, bufsize);
-    const buflen: usize = 0;
-    buf[0] = 0;
-    var ab: std.ArrayListUnmanaged(u8) = std.ArrayListUnmanaged(u8){};
+pub fn editorPrompt(allocator: std.mem.Allocator, prompt: []u8) !?[]u8 {
+    var input: std.ArrayListUnmanaged(u8) = .{};
+    errdefer input.deinit(allocator);
+
+    var ab: std.ArrayListUnmanaged(u8) = .{};
     defer ab.deinit(allocator);
 
     while (true) {
-        try editorSetStatusMessage(allocator, prompt);
-        try editorRefreshScreen(&gpa, &ab);
+        const status = try std.fmt.allocPrint(allocator, "{s}{s}", .{ prompt, input.items });
+        defer allocator.free(status);
+
+        try editorSetStatusMessage(allocator, status);
+        try editorRefreshScreen(allocator, &ab);
 
         const key = try editorReadKey();
-        const otherkey: u8 = @intCast(key);
+
         if (key == editorKey.BACKSPACE or key == ctrlKey('h') or key == editorKey.DEL_KEY) {
-            if (buflen != 0) {
-                buf[buflen - 1] = 0;
+            if (input.items.len > 0) _ = input.pop();
+        } else if (key == '\x1b') {
+            try editorSetStatusMessage(allocator, "");
+            input.deinit(allocator);
+            return null;
+        } else if (key == '\r') {
+            if (input.items.len > 0) {
+                try editorSetStatusMessage(allocator, "");
+                return try input.toOwnedSlice(allocator);
             }
-            if (key == '\x1b') {
-                try editorSetStatusMessage(allocator, &.{});
-                return &.{};
-            } else if (key == '\r') {
-                if (buflen != 0) {
-                    try editorSetStatusMessage(allocator, &.{});
-                    return buf[0..buflen];
-                }
-            } else if (otherkey != ctrlKey(otherkey) and key < 128) {
-                if (buflen == bufsize - 1) {
-                    bufsize *= 2;
-                    buf = try allocator.realloc(buf, bufsize);
-                }
-                buf[buflen + 1] = otherkey;
-                buf[buflen] = 0;
-            }
+        } else if (key >= 32 and key < 127) {
+            try input.append(allocator, @intCast(key));
         }
     }
 }
 
 pub fn editorMoveCursor(key: i32) void {
-    const row = if (E.cy >= E.numrows) null else E.row[E.cy];
+    var row = if (E.cy >= E.numrows) null else E.row[E.cy];
     switch (key) {
         editorKey.ARROW_LEFT => {
             if (E.cx != 0) {
-                E.cx = E.cx - 1;
+                E.cx -= 1;
             } else if (E.cy > 0) {
                 E.cy -= 1;
-                E.cx = E.row[E.cy].chars.len;
+                E.cx = E.row[E.cy].size;
             }
-            return;
         },
         editorKey.ARROW_RIGHT => {
-            if (row != null and E.cx < row.?.chars.len) {
-                E.cx += 1;
-            } else if (row != null and E.cx == row.?.chars.len) {
-                E.cy += 1;
-                E.cx = 1;
+            if (row) |r| {
+                if (E.cx < r.size) {
+                    E.cx += 1;
+                } else if (E.cx == r.size) {
+                    E.cy += 1;
+                    E.cx = 0;
+                }
             }
-            return;
         },
         editorKey.ARROW_UP => {
             if (E.cy != 0)
                 E.cy = E.cy - 1;
-            return;
         },
         editorKey.ARROW_DOWN => {
             if (E.cy < E.numrows)
                 E.cy += 1;
-            return;
         },
-        else => {
-            return;
-        },
+        else => {},
     }
     row = if (E.cy >= E.numrows) null else E.row[E.cy];
-    const rowlen = if (row) row.chars.len else 0;
+    const rowlen = if (row) |r| r.size else 0;
     if (E.cx > rowlen) {
-        E.cx = rowlen + 1;
+        E.cx = rowlen;
     }
+    dlog("MOVE key={d} cy={d} cx={d} rowlen={d}", .{ key, E.cy, E.cx, rowlen });
 }
 
-pub fn editorProcessKeyPress(gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_safe = true })) !void {
+pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
     const key: i32 = try editorReadKey();
-    const allocator = gpa.allocator();
 
     switch (key) {
         '\r' => {
@@ -594,6 +595,7 @@ pub fn editorProcessKeyPress(gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_s
             return;
         },
         else => {
+            dlog("KEY raw={d} char={c}", .{ key, @as(u8, @intCast(key)) });
             const tmp: []const u8 = &[1]u8{@intCast(key)};
             const ch: []u8 = try std.fmt.allocPrint(allocator, "{s}", .{tmp});
             editorInsertChar(allocator, ch) catch |err| {
@@ -634,7 +636,6 @@ pub fn editorDrawRows(allocator: std.mem.Allocator, ab: *std.ArrayListUnmanaged(
     for (0..rowsize) |y| {
         const filerow = y + E.rowoff;
 
-        try ab.appendSlice(allocator, "\x1b[K");
         if (filerow >= E.numrows) {
             if (y == rowsize / 3 and E.numrows == 0) {
                 const welcome = try std.fmt.allocPrint(allocator, "Kilo editor -- version {s}", .{kiloversion});
@@ -650,7 +651,7 @@ pub fn editorDrawRows(allocator: std.mem.Allocator, ab: *std.ArrayListUnmanaged(
 
                 const to_print = @min(welcome.len, colsize);
                 try ab.appendSlice(allocator, welcome[0..to_print]);
-                // allocator.free(welcome);
+                allocator.free(welcome);
             } else {
                 try ab.appendSlice(allocator, "~");
             }
@@ -662,6 +663,7 @@ pub fn editorDrawRows(allocator: std.mem.Allocator, ab: *std.ArrayListUnmanaged(
             }
         }
 
+        try ab.appendSlice(allocator, "\x1b[K");
         try ab.appendSlice(allocator, "\r\n");
     }
 }
@@ -697,13 +699,10 @@ pub fn editorDrawMessageBar(ab: *std.ArrayListUnmanaged(u8), allocator: std.mem.
     }
 }
 
-pub fn editorRefreshScreen(gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }), ab: *std.ArrayListUnmanaged(u8)) !void {
+pub fn editorRefreshScreen(allocator: std.mem.Allocator, ab: *std.ArrayListUnmanaged(u8)) !void {
     ab.clearRetainingCapacity();
 
     editorScroll();
-
-    const allocator = gpa.allocator();
-
     // var ab = std.ArrayListUnmanaged(u8){};
 
     try ab.appendSlice(allocator, "\x1b[?25l");
@@ -713,12 +712,14 @@ pub fn editorRefreshScreen(gpa: *std.heap.GeneralPurposeAllocator(.{ .thread_saf
     try editorDrawStatusBar(ab, allocator);
     try editorDrawMessageBar(ab, allocator);
 
-    const buf = try std.fmt.allocPrint(allocator, "\x1b[{};{}H", .{ (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1 });
+    const buf = try std.fmt.allocPrint(allocator, "\x1b[{d};{d}H", .{ (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1 });
     defer allocator.free(buf);
     try ab.appendSlice(allocator, buf);
 
     try ab.appendSlice(allocator, "\x1b[?25h");
 
+    dlog("FRAME rowoff={d} coloff={d} cy={d} cx={d} rx={d} bytes={d}", .{ E.rowoff, E.coloff, E.cy, E.cx, E.rx, ab.items.len });
+    dlog("RAW [{s}]", .{ab.items});
     try std.io.getStdOut().writeAll(ab.items);
 }
 
@@ -733,7 +734,7 @@ pub fn editorSetStatusMessage(allocator: std.mem.Allocator, message: []u8) !void
 pub fn editorSave(allocator: std.mem.Allocator) !void {
     if (E.filename == null) {
         const msg = try std.fmt.allocPrint(allocator, "Save as: %s (ESC to cancel)", .{});
-        E.filename = try editorPrompt(msg);
+        E.filename = try editorPrompt(allocator, msg);
         allocator.free(msg);
         if (E.filename == null) {
             const abortmsg = try std.fmt.allocPrint(allocator, "Aborted", .{});
@@ -822,8 +823,12 @@ pub fn main() !void {
     }
     const allocator = gpa.allocator();
 
-    if (args >= 2)
-        try editorOpen(std.os.argv[1], &gpa);
+    if (args >= 2) {
+        try editorOpen(std.os.argv[1], allocator);
+        dlog("started numrows={d} screenrows={d} screencols={d}", .{ E.numrows, E.screenrows, E.screencols });
+    }
+
+    dlog("started numrows={d} cy={d} cx={d}", .{ E.numrows, E.cy, E.cx });
 
     const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-S = save |  Ctrl-Q = quit", .{});
     defer allocator.free(formatted);
@@ -833,12 +838,12 @@ pub fn main() !void {
     defer ab.deinit(allocator);
 
     while (true) {
-        editorRefreshScreen(&gpa, &ab) catch |err| {
+        editorRefreshScreen(allocator, &ab) catch |err| {
             std.debug.print("Refresh error: {any}\n", .{err});
             break;
         };
 
-        editorProcessKeyPress(&gpa) catch |err| {
+        editorProcessKeyPress(allocator) catch |err| {
             if (err == error.UserExit) {
                 return;
             }
