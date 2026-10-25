@@ -269,6 +269,21 @@ pub fn editorRowCxToRx(row: *erow, cx: usize) usize {
     return rx;
 }
 
+pub fn editorRowRxToCx(row: *erow, rx: usize) usize {
+    var cur_rx: usize = 0;
+    var cx: usize = 0;
+    while (cx < row.size) : (cx += 1) {
+        if (row.chars[cx] == '\t') {
+            cur_rx += (kilotabstop - 1) - (cur_rx % kilotabstop);
+        }
+        cur_rx += 1;
+
+        if (cur_rx > rx) return cx;
+    }
+
+    return cx;
+}
+
 pub fn editorRowInsertChar(allocator: std.mem.Allocator, row: *erow, at: usize, ch: []u8) !void {
     var pos = at;
     if (at < 0 or at > row.size) {
@@ -493,7 +508,7 @@ pub fn abFree(ab: *abuf) !void {
 
 //input
 
-pub fn editorPrompt(allocator: std.mem.Allocator, prompt: []u8) !?[]u8 {
+pub fn editorPrompt(allocator: std.mem.Allocator, prompt: []const u8, callback: ?*const fn ([]const u8, i32) void) !?[]u8 {
     var input: std.ArrayListUnmanaged(u8) = .{};
     errdefer input.deinit(allocator);
 
@@ -513,16 +528,19 @@ pub fn editorPrompt(allocator: std.mem.Allocator, prompt: []u8) !?[]u8 {
             if (input.items.len > 0) _ = input.pop();
         } else if (key == '\x1b') {
             try editorSetStatusMessage(allocator, "");
+            if (callback) |cb| cb(input.items, key);
             input.deinit(allocator);
             return null;
         } else if (key == '\r') {
             if (input.items.len > 0) {
                 try editorSetStatusMessage(allocator, "");
+                if (callback) |cb| cb(input.items, key);
                 return try input.toOwnedSlice(allocator);
             }
         } else if (key >= 32 and key < 127) {
             try input.append(allocator, @intCast(key));
         }
+        if (callback) |cb| cb(input.items, key);
     }
 }
 
@@ -634,6 +652,9 @@ pub fn editorProcessKeyPress(allocator: std.mem.Allocator) !void {
         },
         ctrlKey('l'), '\x1b' => {
             return;
+        },
+        ctrlKey('f') => {
+            try editorFind(allocator);
         },
         else => {
             dlog("KEY raw={d} char={c}", .{ key, @as(u8, @intCast(key)) });
@@ -775,7 +796,7 @@ pub fn editorSetStatusMessage(allocator: std.mem.Allocator, message: []u8) !void
 pub fn editorSave(allocator: std.mem.Allocator) !void {
     if (E.filename == null) {
         const msg = try std.fmt.allocPrint(allocator, "Save as: %s (ESC to cancel)", .{});
-        E.filename = try editorPrompt(allocator, msg);
+        E.filename = try editorPrompt(allocator, msg, null);
         allocator.free(msg);
         if (E.filename == null) {
             const abortmsg = try std.fmt.allocPrint(allocator, "Aborted", .{});
@@ -829,6 +850,75 @@ pub fn editorFreeMemory(allocator: std.mem.Allocator) void {
     E.statusmsg = &.{};
 }
 
+// find //
+pub fn editorFindCallback(query: []const u8, key: i32) void {
+    const S = struct {
+        var last_match: isize = -1;
+        var direction: isize = 1;
+    };
+    if (key == '\r' or key == '\x1b') {
+        S.last_match = -1;
+        S.direction = 1;
+        return;
+    } else if (key == editorKey.ARROW_RIGHT or key == editorKey.ARROW_DOWN) {
+        S.direction = 1;
+    } else if (key == editorKey.ARROW_LEFT or key == editorKey.ARROW_UP) {
+        S.direction = -1;
+    } else {
+        S.last_match = -1;
+        S.direction = 1;
+    }
+
+    if (S.last_match == -1) {
+        S.direction = 1;
+    }
+
+    if (E.numrows == 0) {
+        return;
+    }
+
+    const numrows: isize = @intCast(E.numrows);
+    var current: isize = S.last_match;
+
+    var i: usize = 0;
+    while (i < E.numrows) : (i += 1) {
+        current += S.direction;
+
+        if (current == -1) {
+            current = numrows - 1;
+        } else if (current == numrows) {
+            current = 0;
+        }
+
+        const idx: usize = @intCast(current);
+        const row = &E.row[idx];
+        const render = row.render orelse continue;
+
+        if (std.mem.indexOf(u8, render, query)) |rx| {
+            S.last_match = current;
+            E.cy = idx;
+            E.cx = editorRowRxToCx(row, rx);
+            E.rowoff = E.numrows;
+            break;
+        }
+    }
+}
+pub fn editorFind(allocator: std.mem.Allocator) !void {
+    const saved_cx: usize = E.cx;
+    const saved_cy: usize = E.cy;
+    const saved_coloff: usize = E.coloff;
+    const saved_rowoff: usize = E.rowoff;
+    const query = try editorPrompt(allocator, "Search: ", editorFindCallback);
+    if (query) |q| {
+        defer allocator.free(q);
+    } else {
+        E.cx = saved_cx;
+        E.cy = saved_cy;
+        E.coloff = saved_coloff;
+        E.rowoff = saved_rowoff;
+    }
+}
+
 //init
 pub fn initEditor() !void {
     const res = try getWindowSize(&E.screenrows, &E.screencols);
@@ -875,7 +965,7 @@ pub fn main() !void {
 
     dlog("started numrows={d} cy={d} cx={d}", .{ E.numrows, E.cy, E.cx });
 
-    const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-S = save |  Ctrl-Q = quit", .{});
+    const formatted = try std.fmt.allocPrint(allocator, "HELP: Ctrl-S = save |  Ctrl-Q = quit | Ctrl-F = find", .{});
     defer allocator.free(formatted);
     try editorSetStatusMessage(allocator, formatted);
 
