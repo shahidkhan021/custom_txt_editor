@@ -306,13 +306,54 @@ pub fn editorInsertChar(allocator: std.mem.Allocator, input: []u8) !void {
     E.cx += 1;
 }
 
+pub fn editorRowAppendString(allocator: std.mem.Allocator, row: *erow, s: []const u8) !void {
+    const new_len = row.size + s.len;
+    row.chars = try allocator.realloc(row.chars, new_len);
+    @memcpy(row.chars[row.size..new_len], s);
+    row.size = new_len;
+
+    try editorUpdateRow(allocator, row);
+    E.dirty += 1;
+}
+
+pub fn editorFreeRow(allocator: std.mem.Allocator, row: *erow) !void {
+    if (row.render) |rend| {
+        allocator.free(rend);
+    }
+    allocator.free(row.chars);
+}
+
+pub fn editorDelRow(allocator: std.mem.Allocator, at: usize) !void {
+    if (at >= E.numrows) {
+        return;
+    }
+
+    try editorFreeRow(allocator, &E.row[at]);
+    std.mem.copyForwards(erow, E.row[at .. E.numrows - 1], E.row[at + 1 .. E.numrows]);
+
+    E.numrows -= 1;
+    E.row = try allocator.realloc(E.row, E.numrows);
+    E.dirty += 1;
+}
+
 pub fn editorDelChar(allocator: std.mem.Allocator) !void {
-    if (E.cy == E.numrows) return;
+    if (E.cy == E.numrows) {
+        return;
+    }
+
+    if (E.cx == 0 and E.cy == 0) {
+        return;
+    }
 
     const row: *erow = &E.row[E.cy];
     if (E.cx > 0) {
         try editorRowDelChar(allocator, row, E.cx - 1);
         E.cx -= 1;
+    } else {
+        E.cx = E.row[E.cy - 1].size;
+        try editorRowAppendString(allocator, &E.row[E.cy - 1], row.chars);
+        try editorDelRow(allocator, E.cy);
+        E.cy -= 1;
     }
 }
 
@@ -771,17 +812,21 @@ pub fn editorSave(allocator: std.mem.Allocator) !void {
 
 //memmory freeeing
 pub fn editorFreeMemory(allocator: std.mem.Allocator) void {
-    for (E.row) |r| {
-        if (r.chars.len > 0) allocator.free(r.chars);
-        if (r.render) |rend| allocator.free(rend);
+    for (E.row) |*r| {
+        try editorFreeRow(allocator, r);
     }
-    if (E.row.len > 0) allocator.free(E.row);
+
+    allocator.free(E.row);
+    E.row = &.{};
+    E.numrows = 0;
 
     if (E.filename) |filename| {
         allocator.free(filename);
         E.filename = null;
     }
-    if (E.statusmsg.len > 0) allocator.free(E.statusmsg);
+
+    allocator.free(E.statusmsg);
+    E.statusmsg = &.{};
 }
 
 //init
